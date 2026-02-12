@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Save, Plus, X, Loader2 } from 'lucide-react'
+import { Save, Plus, X, Loader2, AlertTriangle } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,11 +14,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { apiClient, buildEndpoint } from '@/lib/api'
 import { useProjectContext } from '@/contexts/ProjectContext'
 import { toast } from 'sonner'
 import type { ConfigValue, SettingsScope, ScopedSettingsResponse } from '@/types/config'
 import { PermissionRulesEditor } from './PermissionRulesEditor'
+import { findPatternIssues, applyPatternFixes, type PatternIssue } from '@/lib/pattern-utils'
 
 interface SettingsEditorProps {
   onSave?: () => void
@@ -153,29 +164,53 @@ function TextSetting({ id, label, description, value, onChange, placeholder }: {
   )
 }
 
-function TextareaSetting({ id, label, description, value, onChange, placeholder, rows }: {
+type AttributionMode = 'default' | 'custom' | 'none'
+
+function AttributionField({ id, label, description, defaultText, rawValue, onChange }: {
   id: string
   label: string
-  description?: string
-  value: string
-  onChange: (value: string) => void
-  placeholder?: string
-  rows?: number
+  description: string
+  defaultText: string
+  rawValue: ConfigValue | undefined  // undefined = not set, '' = explicitly empty, string = custom
+  onChange: (value: ConfigValue) => void  // null = remove key, '' = disable, string = custom
 }) {
+  const mode: AttributionMode = rawValue === undefined ? 'default' : (rawValue === '' ? 'none' : 'custom')
+  const customText = typeof rawValue === 'string' ? rawValue : ''
+
+  const handleModeChange = (newMode: string) => {
+    if (newMode === 'default') onChange(null)
+    else if (newMode === 'none') onChange('')
+    else onChange(defaultText)  // pre-fill with default when switching to custom
+  }
+
   return (
     <div className="grid gap-2">
-      <Label htmlFor={id}>{label}</Label>
-      <Textarea
-        id={id}
-        className="font-mono text-sm"
-        rows={rows}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-      />
-      {description && (
-        <p className="text-xs text-muted-foreground">{description}</p>
+      <Label>{label}</Label>
+      <div className="flex items-center gap-2">
+        <Tabs value={mode} onValueChange={handleModeChange} className="w-full">
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="default">Default</TabsTrigger>
+            <TabsTrigger value="custom">Custom</TabsTrigger>
+            <TabsTrigger value="none">None</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+      {mode === 'default' && (
+        <p className="text-xs text-muted-foreground font-mono">{defaultText}</p>
       )}
+      {mode === 'custom' && (
+        <Textarea
+          id={id}
+          className="font-mono text-sm"
+          rows={2}
+          value={customText}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      )}
+      {mode === 'none' && (
+        <p className="text-xs text-muted-foreground italic">Attribution disabled — nothing will be appended</p>
+      )}
+      <p className="text-xs text-muted-foreground">{description}</p>
     </div>
   )
 }
@@ -295,6 +330,8 @@ export function SettingsEditor({ onSave }: SettingsEditorProps) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [hasChanges, setHasChanges] = useState(false)
+  const [patternIssues, setPatternIssues] = useState<PatternIssue[]>([])
+  const [showFixDialog, setShowFixDialog] = useState(false)
 
   const fetchSettings = useCallback(async () => {
     setLoading(true)
@@ -347,19 +384,41 @@ export function SettingsEditor({ onSave }: SettingsEditorProps) {
     return (current ?? defaultValue) as T
   }
 
-  const saveSettings = async () => {
+  // Returns undefined when key doesn't exist (vs empty string when explicitly set)
+  const getSettingRaw = (path: string): ConfigValue | undefined => {
+    const keys = path.split('.')
+    let current: ConfigValue = settings
+    for (const key of keys) {
+      if (current === undefined || current === null || typeof current !== 'object' || Array.isArray(current)) return undefined
+      current = (current as Record<string, ConfigValue>)[key]
+    }
+    return current
+  }
+
+  const doSave = async (settingsToSave: Record<string, ConfigValue>) => {
     setSaving(true)
     try {
-      await apiClient('config/settings', {
+      const result = await apiClient<{
+        success: boolean
+        message: string
+        migrated_patterns?: { original: string; migrated: string; category: string }[]
+        removed_patterns?: { pattern: string; category: string; reason: string }[]
+      }>('config/settings', {
         method: 'PUT',
         body: JSON.stringify({
           scope,
-          settings,
+          settings: settingsToSave,
           project_path: activeProject?.path,
         }),
       })
-      toast.success('Settings saved successfully')
-      setHasChanges(false)
+      if (result.migrated_patterns?.length || result.removed_patterns?.length) {
+        toast.success(result.message)
+        // Reload settings to reflect sanitized state
+        fetchSettings()
+      } else {
+        toast.success('Settings saved successfully')
+        setHasChanges(false)
+      }
       onSave?.()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save settings'
@@ -367,6 +426,24 @@ export function SettingsEditor({ onSave }: SettingsEditorProps) {
     } finally {
       setSaving(false)
     }
+  }
+
+  const saveSettings = async () => {
+    // Check for invalid permission patterns before saving
+    const issues = findPatternIssues(settings as Record<string, unknown>)
+    if (issues.length > 0) {
+      setPatternIssues(issues)
+      setShowFixDialog(true)
+      return
+    }
+    await doSave(settings)
+  }
+
+  const handleFixAndSave = async () => {
+    setShowFixDialog(false)
+    const fixed = applyPatternFixes(settings as Record<string, unknown>) as Record<string, ConfigValue>
+    setSettings(fixed)
+    await doSave(fixed)
   }
 
   // Determine if project scopes should be available
@@ -604,24 +681,22 @@ export function SettingsEditor({ onSave }: SettingsEditorProps) {
             <CardDescription>Configure commit and PR attribution text</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <TextareaSetting
+            <AttributionField
               id="attributionCommit"
               label="Commit Attribution"
               description="Text appended to commit messages"
-              value={getSetting<string>('attribution.commit', '')}
+              defaultText="Co-Authored-By: Claude <noreply@anthropic.com>"
+              rawValue={getSettingRaw('attribution.commit')}
               onChange={(v) => updateSetting('attribution.commit', v)}
-              placeholder="Co-Authored-By: Claude <noreply@anthropic.com>"
-              rows={3}
             />
 
-            <TextareaSetting
+            <AttributionField
               id="attributionPr"
               label="PR Attribution"
               description="Text appended to pull request descriptions"
-              value={getSetting<string>('attribution.pr', '')}
+              defaultText="Generated by Claude"
+              rawValue={getSettingRaw('attribution.pr')}
               onChange={(v) => updateSetting('attribution.pr', v)}
-              placeholder="Generated by Claude"
-              rows={2}
             />
           </CardContent>
         </Card>
@@ -744,6 +819,54 @@ export function SettingsEditor({ onSave }: SettingsEditorProps) {
           </CardContent>
         </Card>
       </div>
+
+      {/* Pattern Fix Confirmation Dialog */}
+      <AlertDialog open={showFixDialog} onOpenChange={setShowFixDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              Invalid Permission Patterns Found
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p>
+                  {patternIssues.length} pattern{patternIssues.length !== 1 ? 's' : ''} would
+                  be rejected by Claude Code. Fix them before saving?
+                </p>
+                <div className="max-h-48 overflow-y-auto space-y-2 text-sm">
+                  {patternIssues.map((issue, i) => (
+                    <div key={i} className="rounded border p-2 bg-muted">
+                      <code className="text-xs break-all block">
+                        {issue.pattern.length > 100
+                          ? issue.pattern.slice(0, 100) + '...'
+                          : issue.pattern}
+                      </code>
+                      <p className="text-xs text-muted-foreground mt-1">{issue.error}</p>
+                      {issue.suggestion && (
+                        <p className="text-xs text-green-600 mt-1">
+                          Fix: {issue.suggestion}
+                        </p>
+                      )}
+                      {!issue.suggestion && (
+                        <p className="text-xs text-red-600 mt-1">
+                          Will be removed (cannot auto-fix)
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleFixAndSave}>
+              Fix & Save
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
