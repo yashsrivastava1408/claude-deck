@@ -4,6 +4,33 @@
 
 A self-hosted web application for visualizing and managing Claude Code configuration. Provides a unified interface for managing MCP servers, plugins, slash commands, hooks, agents, permissions, usage tracking, and other Claude Code extensions.
 
+## Open Source Contributions 🛠️
+
+![Open Source Contributor](https://img.shields.io/badge/Open%20Source-Contributor-green)
+
+### Claude Deck — Open Source Contribution (External Maintainer PR)
+
+Claude Deck is a self-hosted web dashboard for managing and visualizing Claude Code configurations.
+
+**Key Contributions:**
+
+- **Security Engineering** — Hardened the backend by remediating critical path traversal and DoS vulnerabilities, and implementing robust input validation
+- Implemented production-ready Docker support using a multi-stage Dockerfile
+- Designed docker-compose workflow for simplified local and production deployment
+- Stabilized production build by resolving TypeScript strict-mode issues
+- Improved runtime reliability through null-safety fixes and edge-case handling
+- Added SPA routing fallback and deployment stability improvements
+- Reduced onboarding complexity by enabling minimal-setup execution
+
+**Impact:**
+
+- Enabled containerized deployment and simplified onboarding with single-command setup
+- Improved production stability and reduced runtime edge-case failures
+
+Contribution reviewed and merged by project maintainers.
+
+🔗 Merged PR: https://github.com/adrirubio/claude-deck/pull/38
+
 ## Features
 
 - **Dashboard** — Overview of all Claude Code configurations with quick stats
@@ -264,29 +291,7 @@ The session transcript viewer feature was inspired by and includes code adapted 
 
 The usage tracking feature ports algorithms from [ccusage](https://github.com/ryoppippi/ccusage) by [ryoppippi](https://github.com/ryoppippi), including the 5-hour session block identification, tiered pricing calculations, and burn rate projections.
 
-## Open Source Contributions 🛠️
 
-### Claude Deck — Open Source Contribution (External Maintainer PR)
-
-Claude Deck is a self-hosted web dashboard for managing and visualizing Claude Code configurations.
-
-**Key Contributions:**
-
-- Implemented production-ready Docker support using a multi-stage Dockerfile
-- Designed docker-compose workflow for simplified local and production deployment
-- Stabilized production build by resolving TypeScript strict-mode issues
-- Improved runtime reliability through null-safety fixes and edge-case handling
-- Added SPA routing fallback and deployment stability improvements
-- Reduced onboarding complexity by enabling minimal-setup execution
-
-**Impact:**
-
-- Enabled containerized deployment and simplified onboarding with single-command setup
-- Improved production stability and reduced runtime edge-case failures
-
-Contribution reviewed and merged by project maintainers.
-
-🔗 Merged PR: https://github.com/adrirubio/claude-deck/pull/38
 
 ## Disclaimer
 
